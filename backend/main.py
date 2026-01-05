@@ -11,6 +11,17 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
+class RetirementRequest(BaseModel):
+    current_age: int
+    retirement_age: int
+    current_savings: float
+    current_investments: float
+    supplemental_retirement_income: float
+    annual_income: float
+    desired_annual_income_in_retirement: float
+    user_input: str = ""
+    model: Literal["gemma3:27b"] = "gemma3:27b"
+
 class HousePurchaseRequest(BaseModel):
     income: float
     total_monthly_debt: float
@@ -37,7 +48,7 @@ async def generate_ollama_stream(messages: list, model: str):
 def generate_house_purchase_plan(request: HousePurchaseRequest):
     try:
         prompt = f"""
-        You are a financial advisor specializing in home purchases. Provide a detailed assessment of whether a potential home buyer can afford a home, and offer personalized recommendations.
+        You are a financial assistant specializing in home purchases. Provide a detailed assessment of whether a potential home buyer can afford a home, and offer personalized recommendations.
 
         Here are the buyer's details:
         - Income: ${request.income} per year
@@ -74,7 +85,51 @@ def generate_house_purchase_plan(request: HousePurchaseRequest):
         )
 
     except Exception as e:
+        logger.exception()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/plan-retirement")
+def generate_house_purchase_plan(request: RetirementRequest):
+    try:
+        prompt = f"""
+        You are a financial assistant providing retirement planning advice. A client has provided the following information:
+
+        - Current Age: {request.current_age} in years
+        - Retirement Age: {request.retirement_age} in years
+        - Current Cash Savings: ${request.current_savings}
+        - Current Investments: ${request.current_investments}
+        - Supplemental Income In Retirement: ${request.supplemental_retirement_income} (If applicable, does not include social security, please estimate this on your own in addition)
+        - Annual Income: ${request.annual_income} per year
+        - Desired Annual Income in Retirement: ${request.desired_annual_income_in_retirement} per year
+        - User input: ${request.user_input} (if applicable)
+
+        Based on this information, please provide a concise retirement plan addressing the following:
+
+        1.  **Estimated Total Savings Needed at Retirement:** Calculate the total amount of savings the client will need at retirement to maintain their desired income, considering inflation.
+        2.  **Annual Savings Required:** Determine the annual savings rate (as a percentage of income) the client needs to achieve their retirement goal.
+        3.  **Investment Strategy:** Suggest a general investment strategy (e.g., diversified portfolio of stocks and bonds) that aligns with their risk tolerance and time horizon.
+        4.  **Additional Considerations:** Offer any additional advice or recommendations, such as reducing debt or maximizing contributions to retirement accounts.
+        5.  **If Feasible/On track:** Most importantly, we want the user to know if their retirement plan is realistic or needs additional suggestions to be feasible.
+
+        Please present your response in a clear and easy-to-understand format. Limit wording as much as possible for quick understanding.
+        """
+        messages = [
+            {
+                'role': 'user',
+                'content': prompt,
+            },
+        ]
+
+        return StreamingResponse(
+            generate_ollama_stream(messages, request.model),
+            media_type="text/plain"
+        )
+
+    except Exception as e:
+        logger.exception()
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     import uvicorn
