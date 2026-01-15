@@ -1,86 +1,18 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse, PlainTextResponse
-from pydantic import BaseModel, Field
-import ollama
-from ollama import web_fetch, web_search
 import logging
 import datetime
-from typing import Literal
+
+from app.models.house_purchase_request import HousePurchaseRequest
+from app.models.retirement_request import RetirementRequest
+from app.models.monthly_budget_request import MonthlyBudgetRequest
+from app.utils.ollama_utils import generate_ollama_stream, get_ollama_response_with_web
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
-
-class RetirementRequest(BaseModel):
-    current_age: int
-    retirement_age: int
-    current_savings: float
-    current_investments: float
-    supplemental_retirement_income: float
-    annual_income: float
-    desired_annual_income_in_retirement: float
-    user_input: str = ""
-    model: Literal["gemma3:27b"] = "gemma3:27b"
-
-class HousePurchaseRequest(BaseModel):
-    income: float
-    total_monthly_debt: float
-    total_liquid_assets: float
-    zip_code: str = Field(pattern=r"^\d{5}$")
-    credit_score: int
-    user_input: str = ""
-    model: Literal["gpt-oss:20b"] = "gpt-oss:20b"
-    
-
-async def generate_ollama_stream(messages: list, model: str):
-    """Generator function to stream response chunks from Ollama."""
-    
-    # Streaming was working well for this use case
-    stream = ollama.chat(
-        model=model,
-        messages=messages,
-        stream=True
-    )
-    for chunk in stream:
-        # Yield each content chunk as a string
-        yield chunk.message.content
-
-
-def get_ollama_response_with_web(messages: list, model: str):
-    """Use Ollama to generate responses using the web when appropriate."""
-    available_tools = {'web_search': web_search, 'web_fetch': web_fetch}
-
-    while True:
-        response = ollama.chat(
-            model=model,
-            messages=messages,
-            think=True,
-            tools=[ollama.web_search, ollama.web_fetch]
-        )
-        if response.message.thinking:
-            logger.info('Thinking: ', response.message.thinking)
-        if response.message.content:
-            logger.info('Content: ', response.message.content)
-        messages.append(response.message)
-        if response.message.tool_calls:
-            logger.info('Tool calls: ', response.message.tool_calls)
-            for tool_call in response.message.tool_calls:
-                function_to_call = available_tools.get(tool_call.function.name)
-            if function_to_call:
-                args = tool_call.function.arguments
-                result = function_to_call(**args)
-                logger.info('Result: ', str(result)[:200]+'...')
-                # Result is truncated for limited context lengths
-                messages.append({'role': 'tool', 'content': str(result)[:8000 * 4], 'tool_name': tool_call.function.name})
-            else:
-                messages.append({'role': 'tool', 'content': f'Tool {tool_call.function.name} not found', 'tool_name': tool_call.function.name})
-        else:
-            break
-            
-    return messages[-1].content
-
 
 @app.post("/plan-home-purchase", response_class=PlainTextResponse)
 def generate_house_purchase_plan(request: HousePurchaseRequest):
@@ -119,7 +51,49 @@ def generate_house_purchase_plan(request: HousePurchaseRequest):
             }
         ]
 
-        return get_ollama_response_with_web(messages, request.model)
+        return get_ollama_response_with_web(logger, messages, request.model)
+
+    except Exception as e:
+        logger.exception("Exception processing:")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/plan-monthly-budget", response_class=PlainTextResponse)
+def generate_monthly_budget_plan(request: MonthlyBudgetRequest):
+    try:
+        prompt = f"""
+        You are a financial assistant specializing in budgets. Please provide a brief sample monthly budget recommendation based on their income, debt, and personal preferences.
+        Please note that the current date is ${datetime.datetime.now().isoformat()}.
+        You will also have access to the Internet, please use this to find relevant data like costs of living in the zip code.
+
+        Here are the buyer's details:
+        - Income: {request.income} per year
+        - Household Size: {request.household_size} people
+        - Total Monthly Debt: {request.total_monthly_debt}
+        - Zip Code: {request.zip_code} (for local property tax estimation)
+        - User input: {request.user_input} (if applicable)
+
+        Based on this information, please provide the following:
+
+        1. **Monthly costs breakdown:**  Estimate how much of their income should go to important categories like housing, saving/investing, utilities, subscriptions, food, healthcare, ect.
+            Feel free to include other categories especially if user input is provided. Explain your reasoning.
+        2. **Estimated Monthly Housing Payment:** Give the client a range of how much they can spend on housing. You can leave out things like rate information, just focus on a payment range for now.
+        3. **Estimated Savings and Investing:** Provide an estimate of what kinds of things the client can do by investing their income, for example if you save 10% for retirement or have some sort of custom goal.
+        4. **Estimated Homeowners Insurance:** Provide an estimate for annual homeowners insurance.
+        5. **Recommendations:** Offer personalized recommendations to the buyer, such as:
+            - Whether their income is sufficient for the location and household size
+            - Strategies for improving their financial situation (e.g., reducing debt, cutting certain costs).
+
+        Please provide a clear and concise assessment, using a professional tone, but limit wording as much as possible so users can get a quick response.
+        """
+        messages = [
+            {
+                'role': 'user',
+                'content': prompt,
+            }
+        ]
+
+        return get_ollama_response_with_web(logger, messages, request.model)
 
     except Exception as e:
         logger.exception("Exception processing:")
